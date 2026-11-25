@@ -96,61 +96,102 @@ Because `run_eval.py` exits with 1 when accuracy is too low or any question regr
 
 ## 4. Observability stack (production)
 
+Stack started with `docker compose -p k5-day14-observability up -d --build --scale agent=1`; experiments ran with 2 agent instances.
+
+**Fix needed to start the stack:** the given `production/Dockerfile` crashed with `ModuleNotFoundError: No module named 'uvicorn'`. The runtime user `agent` has home `/app`, so Python looked for user packages in `/app/.local`, but they were copied to `/home/agent/.local`. I added `ENV PYTHONUSERBASE=/home/agent/.local`. Alert rules unit test: `promtool test rules /p/alert_rules_test.yml` → `SUCCESS`.
+
+### 4.0 Exercise 7.4 (default stack: v2, 2 instances, 10 Locust users, Prometheus 2-minute window)
+
+1. **p95 vs avg:** p95 = 0.297 s, avg = 0.248 s, p99 = 1.871 s. p95 and avg are close because 97 % of requests take ~0.2–0.3 s. The big jump is between p95 and p99: the ~3 % "slow" mock LLM calls (+1.5 s) sit above the 95th percentile and show up only in p99. The gap between avg and the tail percentiles shows that a few users wait much longer than "average".
+2. **Does Nginx balance evenly?** Yes. Requests/s per instance were 2.513 (`172.20.0.7`) and 2.446 (`172.20.0.8`), about 51 % / 49 %. That's what round-robin produces when both instances are healthy.
+3. **Why input tokens/s > output tokens/s?** Input was 354.3 tokens/s and output 188.4 tokens/s. The input contains the system prompt, the retrieved document (v2 RAG context) and the question, while the output is only the short answer. RAG makes the prompt longer than the answer.
+4. **`curl http://localhost:8080/metrics`** returns **404 Not Found** from Nginx. `nginx.conf` blocks `/metrics` from the outside: metrics expose internal details (versions, traffic, cost) and should only be scraped by Prometheus inside the Docker network, not published to the internet.
+
 ### 4.1 Screenshot
 
-- [ ] Dashboard Grafana khi đang có tải (thấy rõ Golden Signals)
-- [ ] Một trace chậm trong Jaeger (thấy span nào chiếm thời gian)
-- [ ] Một trace lỗi trong Jaeger (có event `exception`)
-- [ ] Trang Alerts của Prometheus với ít nhất 1 alert đang **firing**
+- [x] Dashboard Grafana khi đang có tải (thấy rõ Golden Signals) → `screenshots/grafana-dashboard.png` (during experiments A+B: error rate 23.62 %, p95 1.91 s, 2 instances)
+- [x] Một trace chậm trong Jaeger (thấy span nào chiếm thời gian) → `screenshots/jaeger-slow-trace.png`
+- [x] Một trace lỗi trong Jaeger (có event `exception`) → `screenshots/jaeger-error-trace.png`
+- [x] Trang Alerts của Prometheus với ít nhất 1 alert đang **firing** → `screenshots/prometheus-alert-firing.png` (`AgentHighErrorRate` and `AgentHighLatencyP95` both FIRING)
 
 ### 4.2 Thí nghiệm "phá hệ thống"
 
+**Setup and method:**
+- Background load came from Locust headless with **10 users**, not the README's 30. At 30 users, the normal v2 traffic already cost $2.6–3.7/h, above the `LLMCostBurnRateHigh` threshold of $2/h, so that alert was firing before any change and experiment C could not be timed.
+- Each change was applied with a `.env` override plus `docker compose -p k5-day14-observability up -d`. The time is measured from the moment that command finished, and a script polled `/api/v1/alerts` every 5 s.
+- B was applied on top of A, so that both alerts fire together for the screenshot.
+
 | # | Thay đổi | Alert nào firing | Thời gian từ lúc đổi → firing | Panel nào phản ánh rõ nhất |
 |---|---|---|---|---|
-| A | `MOCK_ERROR_RATE=0.2` | | | |
-| B | `MOCK_SLOW_RATE=0.3` | | | |
-| C | `LLM_MODEL=mock-llm-large` | | | |
-| D | `docker pause` 1 instance | | | |
-| E | `AGENT_VERSION=v1` | | | |
+| A | `MOCK_ERROR_RATE=0.2` | `AgentHighErrorRate` (error rate 17.8 % at firing) | **91 s** (pending at 30 s + `for: 1m`) | Golden Signals → **Error rate** (red, 23.62 % in screenshot); Requests/s by status (503 line) |
+| B | `MOCK_SLOW_RATE=0.3` | `AgentHighLatencyP95` (p95 1.90 s) | **146 s** (pending at 25 s + `for: 2m`) | **Latency p95** stat and the p50/p95/p99 graph: p95/p99 jump to ~1.9 s while p50 stays ~0.2 s |
+| C | `LLM_MODEL=mock-llm-large` | `LLMCostBurnRateHigh` (cost burn $6.82/h at firing, from $0.57/h) | **176 s** (pending at 55 s, once the 5-minute rate crossed $2/h, + `for: 2m`) | LLM row → **Cost burn rate (USD/giờ)** and LLM cost (1h); p95 also rose 0.30 → 0.69 s (latency ×2.5) |
+| D | `docker pause` 1 instance (`k5-day14-observability-agent-1`) | `AgentInstanceDown` | **40 s** (pending at 10 s + `for: 30s`) | **Instances up** 2 → 1. Nginx logged **11 × 504** in that window, but the agent's error rate stayed ~0.5–1 %, because those requests never reached a healthy agent |
+| E | `AGENT_VERSION=v1` | **None** (watched 240 s) | — | **Tokens/s** fell ~709 → ~345, the retrieval rate went from ~6/s to no data, and `agent_info{version="v1"}` changed. Error rate and p95 stayed green (p95 0.29 → 0.20 s) |
 
 **Thí nghiệm E không làm alert nào firing. Bạn sẽ phát hiện loại sự cố này trong production bằng cách nào?**
 
-...
+v1 is *healthier* by infrastructure metrics: faster, cheaper, no errors. Only answer quality dropped (4.3 % vs 100 % in section 3), and metrics like latency, errors and saturation cannot see that. It has to be caught with quality signals:
+1. **Before deploy:** run the eval quality gate (`run_eval.py` in CI, `.github/workflows/eval.yml`), which would have blocked v1 with 20 regressions and exit code 1.
+2. **After deploy:**
+   - Run the golden dataset periodically against production (a synthetic eval) and alert on accuracy.
+   - Alert on quality proxies such as `agent_retrieval_total` dropping to 0 or the retrieval hit ratio falling, or an unexpected change in `agent_info{version}`.
+   - Track user feedback (thumbs down), or sample answers with an LLM-as-judge.
 
 ### 4.3 Debug bằng trace
 
-Chọn 1 trace chậm nhất bạn tìm được:
+Chọn 1 trace chậm nhất bạn tìm được (Jaeger, service `observable-agent`, recorded during the 1-instance scaling run, 100 users):
 
-- `trace_id`: ...
-- Tổng thời gian: ... ms
-- Span chiếm nhiều thời gian nhất: ... (... ms, ...%)
-- Dòng log tương ứng (grep theo `trace_id`):
+- `trace_id`: `92fc20b9fa058f745eff3d6be50aa8b1`
+- Tổng thời gian: **5096.9 ms** (`POST /ask`, status 200)
+- Span chiếm nhiều thời gian nhất: among the child spans, **`agent.run` (1880.6 ms, 36.9 %)**. Inside it, the LLM span `chat mock-llm-small` took **1689.3 ms (33.1 %)**, a "slow" mock LLM call, and `agent.retrieve_context` took 191.1 ms (3.7 %, normally ~20 ms).
+- **Interpretation:** the remaining ~3216 ms (63 %) of `POST /ask` happened *before* `agent.run` started. The request was waiting in the queue of the single agent instance (limited to 0.5 CPU) while it served 100 users, which also explains why retrieval took 191 ms instead of ~20 ms. So this trace has two causes: a slow upstream LLM call plus CPU saturation on one instance. Scaling to 3 instances fixes the second (see section 5).
+- Dòng log tương ứng (`docker compose -p k5-day14-observability logs agent | grep 92fc20b9fa058f745eff3d6be50aa8b1`):
 
 ```json
+{"ts": "2026-11-25T15:03:11.022689+00:00", "level": "INFO", "service": "observable-agent", "instance": "d2c98b1b7da4", "event": "llm_call", "trace_id": "92fc20b9fa058f745eff3d6be50aa8b1", "span_id": "56d5f2b1b6fe609b", "request_id": "6b28efbd8ac9", "model": "mock-llm-small", "agent_version": "v2", "input_tokens": 83, "output_tokens": 44, "cost_usd": 3.9e-05, "llm_ms": 1647.5}
+{"ts": "2026-11-25T15:03:11.028543+00:00", "level": "INFO", "service": "observable-agent", "instance": "d2c98b1b7da4", "event": "http_request", "trace_id": "92fc20b9fa058f745eff3d6be50aa8b1", "span_id": "56d5f2b1b6fe609b", "request_id": "6b28efbd8ac9", "method": "POST", "route": "/ask", "status": 200, "ms": 5094.9}
+```
 
+Error trace (`screenshots/jaeger-error-trace.png`): `trace_id` `290d30fe59de15057352cf196f3ab08a`, 97.0 ms, status 503.
+- The span `chat mock-llm-small` (72.1 ms) has `error.type=upstream_unavailable` and an `exception` event: `utils.mock_llm.LLMError: Upstream LLM error: 503 Service Unavailable (mock)`.
+- Matching log line:
+
+```json
+{"ts": "2026-11-25T15:07:24.721682+00:00", "level": "INFO", "service": "observable-agent", "instance": "fd361d2393c4", "event": "llm_error", "trace_id": "290d30fe59de15057352cf196f3ab08a", "span_id": "e0cac4682dcda162", "request_id": "f16ec99e5782", "error": "Upstream LLM error: 503 Service Unavailable (mock)"}
 ```
 
 ---
 
 ## 5. Benchmark scaling (production, Locust headless, 100 users, 2 phút)
 
+Commands: see CP8 in `CHECKPOINTS.md` (`--headless -u 100 -r 10 -t 2m --csv /mnt/results/scale_N`). Numbers are from the `POST /ask` row of `benchmark-results/scale_1_stats.csv` and `scale_3_stats.csv`.
+
 | Số instance | RPS | p50 (ms) | p95 (ms) | p99 (ms) | Failures |
 |---|---|---|---|---|---|
-| 1 | | | | | |
-| 3 | | | | | |
+| 1 | 46.74 | 260 | 2200 | 4200 | 60 / 5466 (1.10 %) |
+| 3 | 58.58 | 200 | 600 | 1700 | 55 / 6923 (0.79 %) |
+
+(Aggregated rows, including `/health`: 1 instance 51.59 req/s, p95 2100 ms; 3 instances 64.47 req/s, p95 560 ms.)
 
 **Giải thích kết quả:** Scale có cải thiện p95 không? Nút thắt nằm ở đâu?
 
-...
+Yes, a lot. p95 fell from 2200 to 600 ms (−73 %), p99 from 4200 to 1700 ms, and average latency from 623 to 276 ms. RPS rose 25 % (46.74 → 58.58).
+
+With 1 instance, the bottleneck was the agent container itself. It is limited to `cpus: "0.5"` and runs one uvicorn process, so 100 users queued in front of it: the slow trace in 4.3 spent 63 % of its time waiting before `agent.run` started. Three instances split the queue, so most requests go straight to the LLM call again (p50 200 ms ≈ the bare mock-LLM latency).
+
+RPS did not triple because Locust users wait 0.5–2 s between requests. With 100 users the offered load is only ~60–65 req/s, so with 3 instances throughput is limited by the users, not by the agents. The remaining p99 of 1700 ms is now the **upstream LLM** itself: 3 % of calls are slow by design (`MOCK_SLOW_RATE`, +1.5 s). Adding instances cannot fix that; only a faster or more reliable LLM, timeouts with retries, or caching would.
 
 ---
 
 ## 6. Kết luận
 
 - 3 điều bạn học được về benchmark & observability:
-  1. ...
-  2. ...
-  3. ...
+  1. **Percentiles, not averages.** 3 % slow requests barely moved avg or p95, but raised p99 about 7× (section 2.2), and the tail is what users complain about. SLOs and alerts should use p95/p99, and an alert needs a `for:` duration (30 s–2 min here) to avoid false alarms from short spikes.
+  2. **Metrics, traces and logs answer different questions, and the `trace_id` connects them.** The dashboard showed *that* p95 was high, the Jaeger trace showed *where* (63 % queueing plus a slow LLM span), and the JSON log line with the same `trace_id` gave the exact request details.
+  3. **Infrastructure health ≠ product quality.** Switching to v1 made every infrastructure panel greener while accuracy dropped from 91–100 % to 4 %. Errors at the load balancer (11 × 504 in experiment D) were also invisible to the agent's own metrics. Production needs eval quality gates and synthetic checks from outside, not only internal metrics.
 - Nếu đưa agent này lên production thật, bạn sẽ thêm metric / alert nào nữa?
-
-...
+  - **Quality:** a scheduled golden-dataset eval against production that exports `agent_eval_accuracy` (alert if < 85 %), the retrieval hit ratio (alert if it drops sharply), and a user-feedback "thumbs down" rate.
+  - **Load-balancer side:** Nginx 5xx/504 rate and upstream response time (e.g. an nginx exporter), plus an external synthetic `/ask` check, so failures the agent never sees are still caught.
+  - **Cost:** a per-day budget burn alert (multi-window: fast 5 m and slow 1 h), cost per correct answer, and tokens per request by model, to catch prompt bloat.
+  - **Saturation:** in-flight requests per instance and CPU throttling (`container_cpu_cfs_throttled_seconds_total`), to scale out before p95 degrades. Also an alert on `agent_info` version changes.

@@ -349,3 +349,10 @@ Total messages: 10
   - Added the Exercise 7.1 histogram `agent_question_length_chars` to `develop/app.py` and checked that it appears in `/metrics` (questions of 40, 2 and 300 chars fell into the expected buckets).
   - Wrote `.github/workflows/eval.yml`, which fails the PR check when accuracy < 85 % or a question regresses.
   - Drafted the analysis text. I checked the ratios (RPS, tokens, cost per correct answer) against the JSON files.
+- **CP8 (Part 7, Step 2):** Used an AI assistant for the following:
+  - Started the stack with `-p k5-day14-observability` and fixed a startup bug in `production/Dockerfile`: `PYTHONUSERBASE` was missing, which caused `No module named 'uvicorn'`.
+  - Ran the alert unit test (`promtool` → `SUCCESS`) and the headless Locust scaling runs (`scale_1`, `scale_3` CSVs).
+  - Found the slowest trace and an error trace through the Jaeger API, with matching JSON log lines by `trace_id`.
+  - Ran experiments A–E with a script that polls the Prometheus alerts API to time pending/firing.
+  - I took the 4 screenshots myself while the alerts were firing.
+  - The AI drafted sections 4–6 of `BENCHMARK_REPORT.md` from the CSVs and measured values, and I reviewed them. Background load was 10 users instead of 30 because 30 users alone already exceeded the $2/h cost alert.
