@@ -153,7 +153,10 @@ Observed test results via Nginx (`docker compose -p k5-day14-docker up -d --buil
 ### Exercise 3.1: Railway Deployment (`06-lab-complete/`)
 
 - **Platform:** Railway (Docker build from `06-lab-complete/railway.toml` + `Dockerfile`, with managed Redis)
-- **Public URL:** *(pending — will be filled in right after Railway deployment)*
+- **Public URL:** https://agent-production-c93599a7.up.railway.app
+- **Self-test (CP6, 2026-11-25):** `GET /health` → `200`, `GET /ready` → `200` (`{"ready":true,"redis":true}`), `POST /ask` without key → `401`, `POST /ask` with `X-API-Key` → `200`.
+- **Grader:** `check_production_ready.py --public-url ...` returned `12/12 · 44/44 checks passed`.
+- **Variables on Railway (not in code):** `AGENT_API_KEY` (secret), `REDIS_URL=${{Redis.REDIS_URL}}`, `ENVIRONMENT=production`, `RATE_LIMIT_PER_MINUTE`, `DAILY_BUDGET_USD`, `MONTHLY_BUDGET_USD`.
 - **Screenshots:** `screenshots/dashboard.png`, `screenshots/running.png`, `screenshots/test.png` (see `DEPLOYMENT.md`)
 
 ### Comparison: `railway.toml` vs `render.yaml`
@@ -339,3 +342,4 @@ Total messages: 10
   - Added a fail-fast check in `config.py` when `ENVIRONMENT=production` and `AGENT_API_KEY` is empty.
   - Re-ran the unmodified `check_production_ready.py` inside a Linux (`os.name == 'posix'`) container with Docker access: `PASS 12/12`, `43/43 checks passed`, `238 MB` image, `docker stop` exit code `0` in `0.6s`.
   - Manually confirmed that `POST /ask` with Redis down returns `503`, and that the app refuses to start in production without a key.
+- **CP6 (Part 3):** Used an AI assistant to deploy `06-lab-complete/` to Railway with the CLI (project, managed Redis, `REDIS_URL=${{Redis.REDIS_URL}}`, `railway up`, `railway domain`). I generated and set `AGENT_API_KEY` myself in the Railway dashboard; it was never written to the repo or chat. Verified with the 4 CP6 self-test commands (200/200/401/200) and with `check_production_ready.py --public-url` (`44/44`).
