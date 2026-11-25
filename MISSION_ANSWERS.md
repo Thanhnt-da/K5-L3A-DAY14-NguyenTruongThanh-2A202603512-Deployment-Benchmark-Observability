@@ -331,3 +331,11 @@ Total messages: 10
 - **CP3 (Part 4):** Used AI assistant to inspect `04-api-gateway/develop` and `production` (`rate_limiter.py`, `cost_guard.py`), execute the API key (`401`/`200`) and JWT + rate-limit loop (`200` → `429`) tests locally, and summarize the Cost Guard design. All HTTP outputs were captured from real local runs with tokens masked.
 - **CP4 (Part 5):** Used AI assistant to summarize health/readiness probes, graceful shutdown, and stateless design, and to run the 3-replica Compose stack (`docker compose -p k5-day14-scaling up -d --build --scale agent=3`) with `test_stateless.py`. Verified multi-instance load balancing and 10/10 Redis history persistence from real output.
 - **CP5 (Part 6):** Used AI assistant to implement all TODOs in `06-lab-complete/` (`app/config.py`, `auth.py`, `redis_client.py`, `rate_limiter.py`, `cost_guard.py`, `main.py`, multi-stage `Dockerfile`, `docker-compose.yml`, `.dockerignore`, `.env.example`, `railway.toml`, `render.yaml`). Verified locally with unmodified `check_production_ready.py` in a POSIX Linux environment with Docker (`PASS 12/12`, `43/43 checks passed`, `238 MB` image, `SIGTERM` exit code `0`).
+- **CP5 review & hardening (Part 6):** Asked an AI assistant to review the Part 6 code against the grading contract and `RUBRIC.md`. Changes made after the review:
+  - Removed the in-memory fallback from `rate_limiter.py` and `cost_guard.py`, so state lives only in Redis and Redis errors now return `503`.
+  - Made the sliding-window check-and-add one atomic Redis Lua script, so concurrent workers can't exceed the limit.
+  - Hashed the API key before using it in Redis key names.
+  - Removed the hardcoded `AGENT_API_KEY` default from `docker-compose.yml` (it now comes from `.env`).
+  - Added a fail-fast check in `config.py` when `ENVIRONMENT=production` and `AGENT_API_KEY` is empty.
+  - Re-ran the unmodified `check_production_ready.py` inside a Linux (`os.name == 'posix'`) container with Docker access: `PASS 12/12`, `43/43 checks passed`, `238 MB` image, `docker stop` exit code `0` in `0.6s`.
+  - Manually confirmed that `POST /ask` with Redis down returns `503`, and that the app refuses to start in production without a key.

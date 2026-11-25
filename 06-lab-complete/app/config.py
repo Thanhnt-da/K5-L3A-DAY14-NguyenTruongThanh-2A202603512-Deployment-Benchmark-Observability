@@ -29,4 +29,11 @@ class Settings:
     monthly_budget_usd: Optional[float] = field(default_factory=lambda: _parse_optional_float("MONTHLY_BUDGET_USD"))
 
 
-settings = Settings()
+    def validate(self) -> "Settings":
+        """Fail fast in production instead of running with an unusable config."""
+        if self.environment.lower() == "production" and not self.agent_api_key:
+            raise RuntimeError("AGENT_API_KEY must be set when ENVIRONMENT=production")
+        return self
+
+
+settings = Settings().validate()

@@ -3,13 +3,14 @@ services:
     build: .
     ports:
       - "8000:8000"
+    # AGENT_API_KEY is NOT set here (no hardcoded secret): put it in .env
+    # (cp .env.example .env). Optional env_file needs Docker Compose >= 2.24.
     env_file:
       - path: .env
         required: false
     environment:
       - PORT=8000
       - ENVIRONMENT=${ENVIRONMENT:-development}
-      - AGENT_API_KEY=${AGENT_API_KEY:-dev-key}
       - REDIS_URL=redis://redis:6379/0
       - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-10}
       - DAILY_BUDGET_USD=${DAILY_BUDGET_USD:-1.0}
