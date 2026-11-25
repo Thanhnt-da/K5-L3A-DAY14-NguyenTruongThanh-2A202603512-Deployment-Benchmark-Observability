@@ -343,3 +343,9 @@ Total messages: 10
   - Re-ran the unmodified `check_production_ready.py` inside a Linux (`os.name == 'posix'`) container with Docker access: `PASS 12/12`, `43/43 checks passed`, `238 MB` image, `docker stop` exit code `0` in `0.6s`.
   - Manually confirmed that `POST /ask` with Redis down returns `503`, and that the app refuses to start in production without a key.
 - **CP6 (Part 3):** Used an AI assistant to deploy `06-lab-complete/` to Railway with the CLI (project, managed Redis, `REDIS_URL=${{Redis.REDIS_URL}}`, `railway up`, `railway domain`). I generated and set `AGENT_API_KEY` myself in the Railway dashboard; it was never written to the repo or chat. Verified with the 4 CP6 self-test commands (200/200/401/200) and with `check_production_ready.py --public-url` (`44/44`).
+- **CP7 (Part 7, Step 1):** Used an AI assistant for the following:
+  - Ran agents v1/v2, the 4 concurrency load tests, the 3 `MOCK_SLOW_RATE` runs and the evals in a Linux container. All numbers in `BENCHMARK_REPORT.md` sections 1–3 are copied from the saved `reports/*.json`.
+  - Added 2 `KNOWLEDGE_BASE` entries (JWT, HPA) for `security-02` and `scaling-03`. The final eval scored 23/23 with 0 regressions, `exit 0`; the golden dataset was not modified.
+  - Added the Exercise 7.1 histogram `agent_question_length_chars` to `develop/app.py` and checked that it appears in `/metrics` (questions of 40, 2 and 300 chars fell into the expected buckets).
+  - Wrote `.github/workflows/eval.yml`, which fails the PR check when accuracy < 85 % or a question regresses.
+  - Drafted the analysis text. I checked the ratios (RPS, tokens, cost per correct answer) against the JSON files.
